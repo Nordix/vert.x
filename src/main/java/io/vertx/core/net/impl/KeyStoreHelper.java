@@ -11,6 +11,7 @@
 
 package io.vertx.core.net.impl;
 
+import io.netty.handler.ssl.util.KeyManagerFactoryWrapper;
 import io.netty.util.internal.PlatformDependent;
 import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
@@ -28,6 +29,7 @@ import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
+import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -50,9 +52,10 @@ public class KeyStoreHelper {
   private static final Pattern BEGIN_PATTERN = Pattern.compile("-----BEGIN ([A-Z ]+)-----");
   private static final Pattern END_PATTERN = Pattern.compile("-----END ([A-Z ]+)-----");
 
-  private final String password;
-  private final KeyStore store;
-  private final String aliasPassword;
+  private String password;
+  private KeyStore store;
+  private String aliasPassword;
+  X509KeyManager defaultMgr;
   private final Map<String, X509KeyManager> wildcardMgrMap = new HashMap<>();
   private final Map<String, X509KeyManager> mgrMap = new HashMap<>();
   private final Map<String, TrustManagerFactory> trustMgrMap = new HashMap<>();
@@ -132,10 +135,33 @@ public class KeyStoreHelper {
     this.aliasPassword = aliasPassword;
   }
 
+  public KeyStoreHelper(VertxInternal vertx, List<String> keyPaths, List<String> certPaths) throws Exception {
+    for (int i = 0; i < keyPaths.size(); i++) {
+      ReloadingKeyManager mgr;
+      mgr = new ReloadingKeyManager(vertx, keyPaths.get(i), certPaths.get(i));
+      // First loaded certificate and key is used as default
+      if (defaultMgr == null) {
+        defaultMgr = mgr;
+      }
+      for (String domain : mgr.getDnsNames()) {
+        if (domain.startsWith("*.")) {
+          wildcardMgrMap.put(domain.substring(2), mgr);
+        } else {
+          mgrMap.put(domain, mgr);
+        }
+      }
+    }
+  }
+
   public KeyManagerFactory getKeyMgrFactory() throws Exception {
-    KeyManagerFactory fact = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-    char[] keyPassword = keyPassword(aliasPassword, password);
-    fact.init(store, keyPassword);
+    KeyManagerFactory fact = null;
+    if (store != null) {
+      fact = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+      char[] keyPassword = keyPassword(aliasPassword, password);
+      fact.init(store, keyPassword);
+    } else if (defaultMgr != null) {
+      fact = new KeyManagerFactoryWrapper(defaultMgr);
+    }
     return fact;
   }
 
@@ -175,11 +201,47 @@ public class KeyStoreHelper {
     return getTrustMgrFactory(vertx).getTrustManagers();
   }
 
+
   /**
    * @return the store
    */
   public KeyStore store() {
     return store;
+  }
+
+  public static List<String> getDnsNames(X509Certificate cert) {
+    List<String> dnsNames = new ArrayList<>();
+
+    // Add Common Name as hostname.
+    String dn = cert.getSubjectX500Principal().getName();
+    if (!dn.isEmpty()) {
+      try {
+        dnsNames.addAll(getX509CertificateCommonNames(dn));
+      } catch (Exception e) {
+        // Ignore.
+      }
+    }
+
+    // Parse dnsNames from SubjectAlternativeNames extension.
+    try {
+      Collection<List<?>> sans = cert.getSubjectAlternativeNames();
+      if (sans != null) {
+        for (List<?> san : sans) {
+          int type = (Integer) san.get(0);
+          // dNSName == 2
+          if (type == 2) {
+            String dnsName = san.get(1).toString();
+            if ((dnsName != null) && !dnsName.isEmpty()) {
+              dnsNames.add(dnsName);
+            }
+          }
+        }
+      }
+    } catch (CertificateParsingException e) {
+      // Ignore.
+    }
+
+    return dnsNames;
   }
 
   public static List<String> getX509CertificateCommonNames(String dn) throws Exception {
@@ -248,7 +310,7 @@ public class KeyStoreHelper {
     return keyStore;
   }
 
-  private static PrivateKey loadPrivateKey(Buffer keyValue) throws Exception {
+  public static PrivateKey loadPrivateKey(Buffer keyValue) throws Exception {
     if (keyValue == null) {
       throw new RuntimeException("Missing private key path");
     }
@@ -336,7 +398,7 @@ public class KeyStoreHelper {
     return pems;
   }
 
-  private static X509Certificate[] loadCerts(Buffer buffer) throws Exception {
+  public static X509Certificate[] loadCerts(Buffer buffer) throws Exception {
     if (buffer == null) {
       throw new RuntimeException("Missing X.509 certificate path");
     }
