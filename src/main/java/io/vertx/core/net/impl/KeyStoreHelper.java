@@ -11,7 +11,6 @@
 
 package io.vertx.core.net.impl;
 
-import io.netty.handler.ssl.util.KeyManagerFactoryWrapper;
 import io.netty.util.internal.PlatformDependent;
 import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
@@ -52,10 +51,9 @@ public class KeyStoreHelper {
   private static final Pattern BEGIN_PATTERN = Pattern.compile("-----BEGIN ([A-Z ]+)-----");
   private static final Pattern END_PATTERN = Pattern.compile("-----END ([A-Z ]+)-----");
 
-  private String password;
-  private KeyStore store;
-  private String aliasPassword;
-  X509KeyManager defaultMgr;
+  private final String password;
+  private final KeyStore store;
+  private final String aliasPassword;
   private final Map<String, X509KeyManager> wildcardMgrMap = new HashMap<>();
   private final Map<String, X509KeyManager> mgrMap = new HashMap<>();
   private final Map<String, TrustManagerFactory> trustMgrMap = new HashMap<>();
@@ -135,33 +133,10 @@ public class KeyStoreHelper {
     this.aliasPassword = aliasPassword;
   }
 
-  public KeyStoreHelper(VertxInternal vertx, List<String> keyPaths, List<String> certPaths) throws Exception {
-    for (int i = 0; i < keyPaths.size(); i++) {
-      ReloadingKeyManager mgr;
-      mgr = new ReloadingKeyManager(vertx, keyPaths.get(i), certPaths.get(i));
-      // First loaded certificate and key is used as default
-      if (defaultMgr == null) {
-        defaultMgr = mgr;
-      }
-      for (String domain : mgr.getDnsNames()) {
-        if (domain.startsWith("*.")) {
-          wildcardMgrMap.put(domain.substring(2), mgr);
-        } else {
-          mgrMap.put(domain, mgr);
-        }
-      }
-    }
-  }
-
   public KeyManagerFactory getKeyMgrFactory() throws Exception {
-    KeyManagerFactory fact = null;
-    if (store != null) {
-      fact = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-      char[] keyPassword = keyPassword(aliasPassword, password);
-      fact.init(store, keyPassword);
-    } else if (defaultMgr != null) {
-      fact = new KeyManagerFactoryWrapper(defaultMgr);
-    }
+    KeyManagerFactory fact = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    char[] keyPassword = keyPassword(aliasPassword, password);
+    fact.init(store, keyPassword);
     return fact;
   }
 
@@ -200,7 +175,6 @@ public class KeyStoreHelper {
   public TrustManager[] getTrustMgrs(VertxInternal vertx) throws Exception {
     return getTrustMgrFactory(vertx).getTrustManagers();
   }
-
 
   /**
    * @return the store

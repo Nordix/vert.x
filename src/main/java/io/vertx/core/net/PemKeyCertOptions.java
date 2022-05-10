@@ -19,6 +19,7 @@ import io.vertx.core.impl.Arguments;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.impl.KeyStoreHelper;
+import io.vertx.core.net.impl.ReloadingPemKeyManager;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.X509KeyManager;
@@ -97,7 +98,8 @@ import java.util.function.Function;
 @DataObject(generateConverter = true, publicConverter = false)
 public class PemKeyCertOptions implements KeyCertOptions {
 
-  private KeyStoreHelper helper;
+  private ReloadingPemKeyManager km;
+
   private List<String> keyPaths;
   private List<Buffer> keyValues;
   private List<String> certPaths;
@@ -390,11 +392,11 @@ public class PemKeyCertOptions implements KeyCertOptions {
     return new PemKeyCertOptions(this);
   }
 
-  KeyStoreHelper getHelper(Vertx vertx) throws Exception {
-    if (helper == null) {
-      helper = new KeyStoreHelper((VertxInternal) vertx, keyPaths, certPaths);
+  X509KeyManager getKeyManager(Vertx vertx) throws Exception {
+    if (km == null) {
+      km = new ReloadingPemKeyManager((VertxInternal) vertx, certPaths, keyPaths, certValues, keyValues);
     }
-    return helper;
+    return km;
   }
 
   /**
@@ -404,19 +406,16 @@ public class PemKeyCertOptions implements KeyCertOptions {
    * @return the {@code KeyStore}
    */
   public KeyStore loadKeyStore(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper.store() : null;
+    return null;
   }
 
   @Override
   public KeyManagerFactory getKeyManagerFactory(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper.getKeyMgrFactory() : null;
+    return new KeyManagerFactoryWrapper(getKeyManager(vertx));
   }
 
   @Override
   public Function<String, X509KeyManager> keyManagerMapper(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper::getKeyMgr : null;
+    return serverName -> km;
   }
 }

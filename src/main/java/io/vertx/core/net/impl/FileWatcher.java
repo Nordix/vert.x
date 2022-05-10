@@ -21,6 +21,7 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.util.List;
+import java.util.function.Consumer;
 
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
@@ -31,10 +32,10 @@ public class FileWatcher implements Runnable, Closeable {
 
   private WatchService watchService;
   private List<Path> notifyOnPaths;
-  private Runnable callback;
+  private Consumer<Path> callback;
   private volatile boolean close = false;
 
-  public FileWatcher(List<Path> paths, Runnable callback) {
+  public FileWatcher(List<Path> paths, Consumer<Path> callback) {
     this.notifyOnPaths = paths;
     this.callback = callback;
 
@@ -66,9 +67,9 @@ public class FileWatcher implements Runnable, Closeable {
             // Check if the move event was for a file that we follow.
             Path fullPath = dir.resolve((Path) event.context());
             if (notifyOnPaths.contains(fullPath)) {
-              callback.run();
-              break;
+              callback.accept(fullPath);
             }
+            key.reset();
           }
         }
       } catch (InterruptedException e) {
