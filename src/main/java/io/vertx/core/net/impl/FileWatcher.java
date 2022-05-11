@@ -45,15 +45,48 @@ public class FileWatcher implements Runnable, Closeable {
       throw new RuntimeException(e);
     }
 
-    // Instead of watching the files themselves, watch moves in the parent directory
-    // to catch the "atomic swap" of the files.
-    paths.stream().map(Path::getParent).distinct().forEach(p -> {
-      try {
-        p.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY);
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
-    });
+    // Instead of watching the files we watch all moves in the parent directory:
+    // given paths: /foo/bar/cert.pem and /foo/bar/pkey.pem
+    // single watch will be assigned to directory: /foo/bar
+    //
+    // The approach works when simply moving new files in place, and with K8s secret mounts
+    // which uses following symlink based approach to guarantee atomic change:
+    //
+    // Initial directory layout:
+    //
+    // /secret-mountpoint/file1                # symbolic link to ..data/file1
+    // /secret-mountpoint/file2                # symbolic link to ..data/file2
+    // /secret-mountpoint/..data               # symbolic link to ..timestamp-1
+    // /secret-mountpoint/..timestamp-1        # directory
+    // /secret-mountpoint/..timestamp-1/file1  # initial version of file1
+    // /secret-mountpoint/..timestamp-1/file2  # initial version of file2
+    //
+    // New versions of files are created into directory ..timestamp-2 but not yet used
+    //
+    // /secret-mountpoint/file1                # symbolic link to ..data/file1
+    // /secret-mountpoint/file2                # symbolic link to ..data/file2
+    // /secret-mountpoint/..data               # symbolic link to ..timestamp-1
+    // /secret-mountpoint/..timestamp-1        # directory
+    // /secret-mountpoint/..timestamp-1/file1  # initial version of file1
+    // /secret-mountpoint/..timestamp-1/file2  # initial version of file2
+    // /secret-mountpoint/..timestamp-2        # new directory
+    // /secret-mountpoint/..timestamp-2/file1  # new version of file1
+    // /secret-mountpoint/..timestamp-2/file2  # new version of file2
+    //
+    // To take new files into use, atomic update of symlink ..data is performed:
+    //
+    // /secret-mountpoint/file1                # symbolic link to ..data/file1
+    // /secret-mountpoint/file2                # symbolic link to ..data/file2
+    // /secret-mountpoint/..data               # symbolic link to ..timestamp-2
+    // /secret-mountpoint/..timestamp-2        # new directory
+    // /secret-mountpoint/..timestamp-2/file1  # new version of file1
+    // /secret-mountpoint/..timestamp-2/file2  # new version of file2
+    //
+    // The move will trigger a watch event.
+    paths.stream()
+        .map(Path::getParent) // Watch parent directory of each file.
+        .distinct() // Watch only unique directories.
+        .forEach(p -> watch(p, watchService));
   }
 
   @Override
@@ -61,16 +94,19 @@ public class FileWatcher implements Runnable, Closeable {
     do {
       try {
         final WatchKey key = watchService.take();
+
         if (key != null) {
           Path dir = (Path) key.watchable();
           for (WatchEvent<?> event : key.pollEvents()) {
-            // Check if the move event was for a file that we follow.
             Path fullPath = dir.resolve((Path) event.context());
+
+            // Check if the move event was for a file that we follow.
             if (notifyOnPaths.contains(fullPath)) {
+              // Notify that file changed.
               callback.accept(fullPath);
             }
-            key.reset();
           }
+          key.reset();
         }
       } catch (InterruptedException e) {
         log.warn("Interrupted", e);
@@ -85,5 +121,13 @@ public class FileWatcher implements Runnable, Closeable {
   public void close() throws IOException {
     close = true;
     watchService.close();
+  }
+
+  static void watch(Path directory, WatchService ws) {
+    try {
+      directory.register(ws, StandardWatchEventKinds.ENTRY_MODIFY);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 }

@@ -17,8 +17,8 @@ import javax.net.ssl.StandardConstants;
 import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.SNIHostName;
 
+import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.impl.Arguments;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
@@ -30,6 +30,7 @@ import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -50,33 +51,42 @@ public class ReloadingPemKeyManager extends X509ExtendedKeyManager {
       List<Buffer> certValues, List<Buffer> keyValues) throws Exception {
     this.vertx = vertx;
 
-    Arguments.require((certPaths.size() == keyPaths.size()) && (certValues.size() == keyValues.size()),
-        "Number of certificates and keys do not match");
+    if ((keyPaths.size() < certPaths.size()) || (keyValues.size() < certValues.size())) {
+      throw new VertxException("Missing private key");
+    } else if ((keyPaths.size() > certPaths.size()) || (keyValues.size() > certValues.size())) {
+      throw new VertxException("Missing X.509 certificate");
+    } else if (keyPaths.isEmpty() && keyValues.isEmpty()) {
+      throw new VertxException("No credentials configured");
+    }
 
-    // Load the credentials from disk for the first time.
+    // Load credentials that were passed as file paths.
     Iterator<String> cpi = certPaths.iterator();
     Iterator<String> kpi = keyPaths.iterator();
     while (cpi.hasNext() && kpi.hasNext()) {
       credentials.add(new Credential(cpi.next(), kpi.next()));
     }
 
-    // Create credentials objects for certificates given by value.
+    // Create credentials that were passed by value.
     Iterator<Buffer> cvi = certValues.iterator();
     Iterator<Buffer> kvi = keyValues.iterator();
     while (cvi.hasNext() && kvi.hasNext()) {
       credentials.add(new Credential(cvi.next(), kvi.next()));
     }
 
+    // Create list of watched Paths from strings.
     List<Path> watched = Stream.of(certPaths, keyPaths)
-        .flatMap(p -> p.stream())
+        .flatMap(Collection::stream)
         .map(Paths::get)
         .collect(Collectors.toList());
 
+    // Start watching changes to the files.
     fileWatcher = new FileWatcher(watched, changedPath -> {
       try {
+        // Re-create credential and thereby reload certificate and key when files change.
         int i = 0;
         for (Credential c : credentials) {
           if (c.pathEquals(changedPath.toString())) {
+            log.info("Reloading: " + changedPath.toString());
             credentials.set(i, new Credential(c.certPath, c.keyPath));
           }
           i++;
@@ -89,62 +99,77 @@ public class ReloadingPemKeyManager extends X509ExtendedKeyManager {
   }
 
   @Override
+  public String chooseEngineClientAlias(String[] keyType, Principal[] issuers, SSLEngine engine) {
+    // Return empty string to signify we always use the first loaded credential as client credentials.
+    return "";
+  }
+
+  @Override
+  public String chooseEngineServerAlias(String keyType, Principal[] issuers, SSLEngine engine) {
+    // If client sent TLS SNI, return the requested server name as alias, which will then be used to select
+    // the one of the credentials in getCertificateChain() and getPrivateKey().
+    ExtendedSSLSession session = (ExtendedSSLSession) engine.getHandshakeSession();
+    for (SNIServerName name : session.getRequestedServerNames()) {
+      if (name.getType() == StandardConstants.SNI_HOST_NAME) {
+        return ((SNIHostName) name).getAsciiName();
+      }
+    }
+
+    // Return empty string to signify that client did not ask for any particular server name,
+    // and that we should use first loaded credential as server credentials.
+    return "";
+  }
+
+  @Override
   public String[] getClientAliases(String keyType, Principal[] issuers) {
-    throw new UnsupportedOperationException(); // Client mode.
+    throw new UnsupportedOperationException();
   }
 
   @Override
   public String chooseClientAlias(String[] keyType, Principal[] issuers, Socket socket) {
-    throw new UnsupportedOperationException(); // Client mode.
-  }
-
-  @Override
-  public String chooseEngineClientAlias(String[] keyType, Principal[] issuers, SSLEngine engine) {
-    throw new UnsupportedOperationException(); // Client mode.
+    throw new UnsupportedOperationException();
   }
 
   public String[] getServerAliases(String keyType, Principal[] issuers) {
-    throw new UnsupportedOperationException(); // Select server certificate based on key type and list of issuers
-                                               // recognized by the peer.
+    throw new UnsupportedOperationException();
   }
 
   public String chooseServerAlias(String keyType, Principal[] issuers, Socket socket) {
-    throw new UnsupportedOperationException(); // Netty does not use SSLSocket
+    throw new UnsupportedOperationException();
   }
 
   public X509Certificate[] getCertificateChain(String alias) {
-    // chooseEngineClientAlias() has set alias to DNS name from SNI extension in TLS
-    // handshake extension.
+    // Alias is set by chooseEngineServerAlias() to the server name set by client in SNI extension or
+    // to "" by chooseEngineClientAlias().
 
-    // No SNI: return the certificate which was loaded first.
+    // Return first loaded certificate if alias is an empty string.
     if (alias.isEmpty()) {
       return credentials.get(0).certificates;
     }
 
     // Find match for requested SNI hostname: return certificate that matched.
     for (Credential c : credentials) {
-      if (c.getDnsNames().contains(alias)) {
+      if (c.isDomainEqual(alias)) {
         return c.certificates;
       }
     }
-    // No match for requested SNI hostname: return the certificate which was loaded
-    // first.
+
+    // No match for requested SNI hostname: return the certificate which was loaded first.
     return credentials.get(0).certificates;
   }
 
   public PrivateKey getPrivateKey(String alias) {
-    // chooseEngineClientAlias() has set alias to DNS name from SNI extension in TLS
-    // handshake extension.
+    // Alias is set by chooseEngineServerAlias() to the server name set by client in SNI extension or
+    // to "" by chooseEngineClientAlias().
 
-    // No SNI: return the key which was loaded first.
+    // Return first loaded key if alias is an empty string.
     if (alias.isEmpty()) {
       return credentials.get(0).key;
     }
 
-    // Find match for requested SNI hostname: return key associated to matching
-    // certificate.
+    // Find match for requested SNI hostname: return key that matched.
     for (Credential c : credentials) {
-      if (c.getDnsNames().contains(alias)) {
+      if (c.isDomainEqual(alias)) {
         return c.key;
       }
     }
@@ -153,40 +178,33 @@ public class ReloadingPemKeyManager extends X509ExtendedKeyManager {
     return credentials.get(0).key;
   }
 
-  @Override
-  public String chooseEngineServerAlias(String keyType, Principal[] issuers, SSLEngine engine) {
-    // If TLS SNI extension is sent by client, return given SNI hostname as an
-    // alias.
-    ExtendedSSLSession session = (ExtendedSSLSession) engine.getHandshakeSession();
-    for (SNIServerName name : session.getRequestedServerNames()) {
-      if (name.getType() == StandardConstants.SNI_HOST_NAME) {
-        return ((SNIHostName) name).getAsciiName();
-      }
-    }
-
-    // No SNI.
-    return "";
-  }
-
   // Credential wraps the certificate (with chain) and associated private key.
   private class Credential {
 
     private final X509Certificate[] certificates;
     private final PrivateKey key;
     private List<String> dnsNames = new ArrayList<>();
+    private List<String> wildcardDnsNames = new ArrayList<>();
     private final String certPath;
     private final String keyPath;
 
     Credential(String certPath, String keyPath) throws Exception {
       this.certPath = certPath;
       this.keyPath = keyPath;
+
       Buffer buf = vertx.fileSystem().readFileBlocking(certPath);
       certificates = KeyStoreHelper.loadCerts(buf);
 
       buf = vertx.fileSystem().readFileBlocking(keyPath);
       key = KeyStoreHelper.loadPrivateKey(buf);
 
-      dnsNames.addAll(KeyStoreHelper.getDnsNames(certificates[0]));
+      for (String fqdn : KeyStoreHelper.getDnsNames(certificates[0])) {
+        if (fqdn.startsWith("*.")) {
+          wildcardDnsNames.add(fqdn.substring(2));
+        } else {
+          dnsNames.add(fqdn);
+        }
+      }
     }
 
     Credential(Buffer certValue, Buffer keyValue) throws Exception {
@@ -198,12 +216,24 @@ public class ReloadingPemKeyManager extends X509ExtendedKeyManager {
       dnsNames.addAll(KeyStoreHelper.getDnsNames(certificates[0]));
     }
 
-    public List<String> getDnsNames() {
-      return dnsNames;
-    }
-
     public boolean pathEquals(String filePath) {
       return certPath.equals(filePath) || keyPath.equals(filePath);
+    }
+
+    public boolean isDomainEqual(String fqdn) {
+      // Try matching domain name to certificate's DNS names.
+      if (dnsNames.contains(fqdn)) {
+        return true;
+      } else if (!wildcardDnsNames.isEmpty()) {
+        // Try to match subdomain.
+        int index = fqdn.indexOf('.') + 1;
+        if (index > 0) {
+          if (wildcardDnsNames.contains(fqdn.substring(index))) {
+            return true;
+          }
+        }
+      }
+      return false;
     }
   }
 }

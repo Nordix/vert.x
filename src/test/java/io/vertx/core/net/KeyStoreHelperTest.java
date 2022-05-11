@@ -18,10 +18,13 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
+import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.util.Enumeration;
+
+import javax.net.ssl.X509KeyManager;
 
 import io.vertx.core.net.impl.KeyStoreHelper;
 import io.vertx.test.core.VertxTestBase;
@@ -49,8 +52,7 @@ public class KeyStoreHelperTest extends VertxTestBase {
     PemKeyCertOptions options = new PemKeyCertOptions()
             .addKeyPath("target/test-classes/tls/server-key.pem")
             .addCertPath("target/test-classes/tls/server-cert.pem");
-    //KeyStoreHelper helper = options.getHelper(vertx);
-  //  assertKeyType(helper.store(), RSAPrivateKey.class);
+    assertKeyType(options.getKeyManager(vertx), RSAPrivateKey.class);
   }
 
   /**
@@ -66,19 +68,12 @@ public class KeyStoreHelperTest extends VertxTestBase {
     PemKeyCertOptions options = new PemKeyCertOptions()
             .addKeyPath("target/test-classes/tls/server-key-ec.pem")
             .addCertPath("target/test-classes/tls/server-cert-ec.pem");
-//KeyStoreHelper helper = options.getHelper(vertx);
-//assertKeyType(helper.store(), ECPrivateKey.class);
+    assertKeyType(options.getKeyManager(vertx), ECPrivateKey.class);
   }
 
-  private void assertKeyType(KeyStore store, Class<?> expectedKeyType) throws KeyStoreException, GeneralSecurityException {
-    assertTrue(store.size() > 0);
-    for (Enumeration<String> e = store.aliases(); e.hasMoreElements(); ) {
-      String alias = e.nextElement();
-      // "dummy" is the password set by KeyStoreHelper when importing the
-      // keys into the internal key store
-      assertThat(store.getKey(alias, "dummy".toCharArray()), instanceOf(expectedKeyType));
-      assertThat(store.getCertificate(alias), instanceOf(X509Certificate.class));
-    }
+  private void assertKeyType(X509KeyManager km, Class<?> expectedKeyType) throws KeyStoreException, GeneralSecurityException {
+    assertThat(km.getPrivateKey(""), instanceOf(expectedKeyType));
+    assertThat(km.getCertificateChain("")[0], instanceOf(X509Certificate.class));
   }
 
   private boolean isECCSupportedByVM() {

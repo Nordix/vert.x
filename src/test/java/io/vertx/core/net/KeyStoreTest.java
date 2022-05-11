@@ -24,6 +24,8 @@ import org.junit.Test;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509KeyManager;
+
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.Collections;
@@ -391,17 +393,17 @@ public class KeyStoreTest extends VertxTestBase {
 
   @Test
   public void testKeyCertPath() throws Exception {
-   // testKeyStore(Cert.SERVER_PEM.get().getHelper(vertx));
+    testKeyManager(Cert.SERVER_PEM.get().getKeyManager(vertx));
   }
 
   /**
    * Test RSA PKCS#1 PEM key
    * #1851
    */
-  // @Test
-  // public void testRsaKeyCertPath() throws Exception {
-  //   testKeyStore(Cert.SERVER_PEM_RSA.get().getHelper(vertx));
-  // }
+  @Test
+  public void testRsaKeyCertPath() throws Exception {
+    testKeyManager(Cert.SERVER_PEM_RSA.get().getKeyManager(vertx));
+  }
 
   @Test
   public void testKeyCertValue() throws Exception {
@@ -410,7 +412,7 @@ public class KeyStoreTest extends VertxTestBase {
     options.setKeyValue(null).setKeyValue(key);
     Buffer cert = vertx.fileSystem().readFileBlocking(options.getCertPath());
     options.setCertValue(null).setCertValue(cert);
- //   testKeyStore(options.getHelper(vertx));
+    testKeyManager(options.getKeyManager(vertx));
   }
 
   @Test
@@ -458,6 +460,12 @@ public class KeyStoreTest extends VertxTestBase {
   private void testTrustStore(KeyStoreHelper helper) throws Exception {
     TrustManager[] keyManagers = helper.getTrustMgrs((VertxInternal) vertx);
     assertTrue(keyManagers.length > 0);
+  }
+
+  private void testKeyManager(X509KeyManager km) {
+    assertNotNull(km);
+    assertNotNull(km.getPrivateKey(""));
+    assertTrue(km.getCertificateChain("").length > 0);
   }
 
   /*
