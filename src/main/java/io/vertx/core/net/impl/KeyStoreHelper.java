@@ -28,6 +28,7 @@ import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
+import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -182,6 +183,41 @@ public class KeyStoreHelper {
     return store;
   }
 
+  public static List<String> getDnsNames(X509Certificate cert) {
+    List<String> dnsNames = new ArrayList<>();
+
+    // Add Common Name as hostname.
+    String dn = cert.getSubjectX500Principal().getName();
+    if (!dn.isEmpty()) {
+      try {
+        dnsNames.addAll(getX509CertificateCommonNames(dn));
+      } catch (Exception e) {
+        // Ignore.
+      }
+    }
+
+    // Parse dnsNames from SubjectAlternativeNames extension.
+    try {
+      Collection<List<?>> sans = cert.getSubjectAlternativeNames();
+      if (sans != null) {
+        for (List<?> san : sans) {
+          int type = (Integer) san.get(0);
+          // dNSName == 2
+          if (type == 2) {
+            String dnsName = san.get(1).toString();
+            if ((dnsName != null) && !dnsName.isEmpty()) {
+              dnsNames.add(dnsName);
+            }
+          }
+        }
+      }
+    } catch (CertificateParsingException e) {
+      // Ignore.
+    }
+
+    return dnsNames;
+  }
+
   public static List<String> getX509CertificateCommonNames(String dn) throws Exception {
     List<String> names = new ArrayList<>();
     if (!PlatformDependent.isAndroid()) {
@@ -248,7 +284,7 @@ public class KeyStoreHelper {
     return keyStore;
   }
 
-  private static PrivateKey loadPrivateKey(Buffer keyValue) throws Exception {
+  public static PrivateKey loadPrivateKey(Buffer keyValue) throws Exception {
     if (keyValue == null) {
       throw new RuntimeException("Missing private key path");
     }
@@ -336,7 +372,7 @@ public class KeyStoreHelper {
     return pems;
   }
 
-  private static X509Certificate[] loadCerts(Buffer buffer) throws Exception {
+  public static X509Certificate[] loadCerts(Buffer buffer) throws Exception {
     if (buffer == null) {
       throw new RuntimeException("Missing X.509 certificate path");
     }

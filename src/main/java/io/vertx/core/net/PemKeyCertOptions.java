@@ -18,7 +18,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.impl.Arguments;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.net.impl.KeyStoreHelper;
+import io.vertx.core.net.impl.ReloadingPemKeyManager;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.X509KeyManager;
@@ -26,6 +26,7 @@ import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Key store options configuring a list of private key and its certificate based on
@@ -97,7 +98,8 @@ import java.util.function.Function;
 @DataObject(generateConverter = true, publicConverter = false)
 public class PemKeyCertOptions implements KeyCertOptions {
 
-  private KeyStoreHelper helper;
+  private ReloadingPemKeyManager km;
+
   private List<String> keyPaths;
   private List<Buffer> keyValues;
   private List<String> certPaths;
@@ -390,21 +392,15 @@ public class PemKeyCertOptions implements KeyCertOptions {
     return new PemKeyCertOptions(this);
   }
 
-  KeyStoreHelper getHelper(Vertx vertx) throws Exception {
-    if (helper == null) {
-      List<Buffer> keys = new ArrayList<>();
-      for (String keyPath : keyPaths) {
-        keys.add(vertx.fileSystem().readFileBlocking(((VertxInternal)vertx).resolveFile(keyPath).getAbsolutePath()));
-      }
-      keys.addAll(keyValues);
-      List<Buffer> certs = new ArrayList<>();
-      for (String certPath : certPaths) {
-        certs.add(vertx.fileSystem().readFileBlocking(((VertxInternal)vertx).resolveFile(certPath).getAbsolutePath()));
-      }
-      certs.addAll(certValues);
-      helper = new KeyStoreHelper(KeyStoreHelper.loadKeyCert(keys, certs), KeyStoreHelper.DUMMY_PASSWORD, null);
+  X509KeyManager getKeyManager(Vertx vertx) throws Exception {
+    if (km == null) {
+      VertxInternal v = (VertxInternal) vertx;
+      km = new ReloadingPemKeyManager(v,
+        certPaths.stream().map(p -> v.resolveFile(p).getAbsolutePath()).collect(Collectors.toList()),
+        keyPaths.stream().map(p -> v.resolveFile(p).getAbsolutePath()).collect(Collectors.toList()),
+        certValues, keyValues);
     }
-    return helper;
+    return km;
   }
 
   /**
@@ -414,19 +410,18 @@ public class PemKeyCertOptions implements KeyCertOptions {
    * @return the {@code KeyStore}
    */
   public KeyStore loadKeyStore(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper.store() : null;
+    return null; // PemKeyCertOptions is used with .pems so there is no KeyStore.
   }
 
   @Override
   public KeyManagerFactory getKeyManagerFactory(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper.getKeyMgrFactory() : null;
+    return new KeyManagerFactoryWrapper(getKeyManager(vertx));
   }
 
   @Override
   public Function<String, X509KeyManager> keyManagerMapper(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper::getKeyMgr : null;
+    X509KeyManager km = getKeyManager(vertx);
+    // ReloadinPemKeyManager will do SNI lookup and mapping from server name to certificate and key.
+    return serverName -> km;
   }
 }
