@@ -15,6 +15,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.net.impl.KeyStoreHelper;
+import io.vertx.core.net.impl.ReloadingKeyStoreKeyManager;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.TrustManager;
@@ -40,6 +41,7 @@ public abstract class KeyStoreOptionsBase implements KeyCertOptions, TrustOption
   private Buffer value;
   private String alias;
   private String aliasPassword;
+  private X509KeyManager km;
 
   /**
    * Default constructor
@@ -189,6 +191,14 @@ public abstract class KeyStoreOptionsBase implements KeyCertOptions, TrustOption
     return helper;
   }
 
+  X509KeyManager getKeyManager(Vertx vertx) throws Exception {
+    if (km == null) {
+      VertxInternal v = (VertxInternal) vertx;
+      km = new ReloadingKeyStoreKeyManager(v, type, provider, v.resolveFile(path).getAbsolutePath(), password);
+    }
+    return km;
+  }
+
   /**
    * Load and return a Java keystore.
    *
@@ -202,14 +212,14 @@ public abstract class KeyStoreOptionsBase implements KeyCertOptions, TrustOption
 
   @Override
   public KeyManagerFactory getKeyManagerFactory(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper.getKeyMgrFactory() : null;
+    return new KeyManagerFactoryWrapper(getKeyManager(vertx));
   }
 
   @Override
   public Function<String, X509KeyManager> keyManagerMapper(Vertx vertx) throws Exception {
-    KeyStoreHelper helper = getHelper(vertx);
-    return helper != null ? helper::getKeyMgr : null;
+    X509KeyManager km = getKeyManager(vertx);
+    // Key manager will do SNI lookup and mapping from SNI server name to certificate and key alias.
+    return serverName -> km;
   }
 
   @Override

@@ -421,7 +421,7 @@ public class PemKeyCertOptions implements KeyCertOptions {
   @Override
   public Function<String, X509KeyManager> keyManagerMapper(Vertx vertx) throws Exception {
     X509KeyManager km = getKeyManager(vertx);
-    // ReloadinPemKeyManager will do SNI lookup and mapping from server name to certificate and key.
+    // Key manager will do SNI lookup and mapping from SNI server name to certificate and key alias.
     return serverName -> km;
   }
 }
